@@ -14,3 +14,10 @@ results
 npm-debug.log
 workspace
 node_modules
+
+browser-version/src
+browser-version/node_modules
+
+*.swp
+*~
+*.swo

@@ -5,9 +5,9 @@ var should = require('chai').should()
   , path = require('path')
   , _ = require('underscore')
   , async = require('async')
-  , Datastore = require('../lib/datastore')
-  , customUtils = require('../lib/customUtils')
   , model = require('../lib/model')
+  , Datastore = require('../lib/datastore')
+  , Persistence = require('../lib/persistence')
   ;
 
 
@@ -17,12 +17,11 @@ describe('Database', function () {
   beforeEach(function (done) {
     d = new Datastore({ filename: testDb });
     d.filename.should.equal(testDb);
-    d.pipeline.should.equal(false);
     d.inMemoryOnly.should.equal(false);
 
     async.waterfall([
       function (cb) {
-        customUtils.ensureDirectoryExists(path.dirname(testDb), function () {
+        Persistence.ensureDirectoryExists(path.dirname(testDb), function () {
           fs.exists(testDb, function (exists) {
             if (exists) {
               fs.unlink(testDb, cb);
@@ -33,274 +32,67 @@ describe('Database', function () {
     , function (cb) {
         d.loadDatabase(function (err) {
           assert.isNull(err);
-          d.datafileSize.should.equal(0);
           d.getAllData().length.should.equal(0);
           return cb();
         });
       }
     ], done);
-
   });
 
   it('Constructor compatibility with v0.6-', function () {
     var dbef = new Datastore('somefile');
     dbef.filename.should.equal('somefile');
-    dbef.pipeline.should.equal(false);
     dbef.inMemoryOnly.should.equal(false);
 
     var dbef = new Datastore('');
     assert.isNull(dbef.filename);
-    dbef.pipeline.should.equal(false);
     dbef.inMemoryOnly.should.equal(true);
 
     var dbef = new Datastore();
     assert.isNull(dbef.filename);
-    dbef.pipeline.should.equal(false);
     dbef.inMemoryOnly.should.equal(true);
   });
 
-
-  describe('Loading the database data from file and persistence', function () {
-
-    it('Every line represents a document', function () {
-      var now = new Date()
-        , rawData = model.serialize({ _id: "1", a: 2, ages: [1, 5, 12] }) + '\n' +
-                    model.serialize({ _id: "2", hello: 'world' }) + '\n' +
-                    model.serialize({ _id: "3", nested: { today: now } })
-        , treatedData = Datastore.treatRawData(rawData)
+  describe('Autoloading', function () {
+  
+    it('Can autoload a database and query it right away', function (done) {
+      var fileStr = model.serialize({ _id: '1', a: 5, planet: 'Earth' }) + '\n' + model.serialize({ _id: '2', a: 5, planet: 'Mars' }) + '\n'
+        , autoDb = 'workspace/auto.db'
+        , db
         ;
-
-      treatedData.sort(function (a, b) { return a._id - b._id; });
-      treatedData.length.should.equal(3);
-      _.isEqual(treatedData[0], { _id: "1", a: 2, ages: [1, 5, 12] }).should.equal(true);
-      _.isEqual(treatedData[1], { _id: "2", hello: 'world' }).should.equal(true);
-      _.isEqual(treatedData[2], { _id: "3", nested: { today: now } }).should.equal(true);
-    });
-
-    it('Badly formatted lines have no impact on the treated data', function () {
-      var now = new Date()
-        , rawData = model.serialize({ _id: "1", a: 2, ages: [1, 5, 12] }) + '\n' +
-                    'garbage\n' +
-                    model.serialize({ _id: "3", nested: { today: now } })
-        , treatedData = Datastore.treatRawData(rawData)
-        ;
-
-      treatedData.sort(function (a, b) { return a._id - b._id; });
-      treatedData.length.should.equal(2);
-      _.isEqual(treatedData[0], { _id: "1", a: 2, ages: [1, 5, 12] }).should.equal(true);
-      _.isEqual(treatedData[1], { _id: "3", nested: { today: now } }).should.equal(true);
-    });
-
-    it('Well formatted lines that have no _id are not included in the data', function () {
-      var now = new Date()
-        , rawData = model.serialize({ _id: "1", a: 2, ages: [1, 5, 12] }) + '\n' +
-                    model.serialize({ _id: "2", hello: 'world' }) + '\n' +
-                    model.serialize({ nested: { today: now } })
-        , treatedData = Datastore.treatRawData(rawData)
-        ;
-
-      treatedData.sort(function (a, b) { return a._id - b._id; });
-      treatedData.length.should.equal(2);
-      _.isEqual(treatedData[0], { _id: "1", a: 2, ages: [1, 5, 12] }).should.equal(true);
-      _.isEqual(treatedData[1], { _id: "2", hello: 'world' }).should.equal(true);
-    });
-
-    it('If two lines concern the same doc (= same _id), the last one is the good version', function () {
-      var now = new Date()
-        , rawData = model.serialize({ _id: "1", a: 2, ages: [1, 5, 12] }) + '\n' +
-                    model.serialize({ _id: "2", hello: 'world' }) + '\n' +
-                    model.serialize({ _id: "1", nested: { today: now } })
-        , treatedData = Datastore.treatRawData(rawData)
-        ;
-
-      treatedData.sort(function (a, b) { return a._id - b._id; });
-      treatedData.length.should.equal(2);
-      _.isEqual(treatedData[0], { _id: "1", nested: { today: now } }).should.equal(true);
-      _.isEqual(treatedData[1], { _id: "2", hello: 'world' }).should.equal(true);
-    });
-
-    it('If a doc contains $$deleted: true, that means we need to remove it from the data', function () {
-      var now = new Date()
-        , rawData = model.serialize({ _id: "1", a: 2, ages: [1, 5, 12] }) + '\n' +
-                    model.serialize({ _id: "2", hello: 'world' }) + '\n' +
-                    model.serialize({ _id: "1", $$deleted: true }) + '\n' +
-                    model.serialize({ _id: "3", today: now })
-        , treatedData = Datastore.treatRawData(rawData)
-        ;
-
-      treatedData.sort(function (a, b) { return a._id - b._id; });
-      treatedData.length.should.equal(2);
-      _.isEqual(treatedData[0], { _id: "2", hello: 'world' }).should.equal(true);
-      _.isEqual(treatedData[1], { _id: "3", today: now }).should.equal(true);
-    });
-
-    it('If a doc contains $$deleted: true, no error is thrown if the doc wasnt in the list before', function () {
-      var now = new Date()
-        , rawData = model.serialize({ _id: "1", a: 2, ages: [1, 5, 12] }) + '\n' +
-                    model.serialize({ _id: "2", $$deleted: true }) + '\n' +
-                    model.serialize({ _id: "3", today: now })
-        , treatedData = Datastore.treatRawData(rawData)
-        ;
-
-      treatedData.sort(function (a, b) { return a._id - b._id; });
-      treatedData.length.should.equal(2);
-      _.isEqual(treatedData[0], { _id: "1", a: 2, ages: [1, 5, 12] }).should.equal(true);
-      _.isEqual(treatedData[1], { _id: "3", today: now }).should.equal(true);
-    });
-
-    it('Compact database on load', function (done) {
-      d.insert({ a: 2 }, function () {
-        d.insert({ a: 4 }, function () {
-          d.remove({ a: 2 }, {}, function () {
-            // Here, the underlying file is 3 lines long for only one document
-            var data = fs.readFileSync(d.filename, 'utf8').split('\n')
-              , filledCount = 0;
-
-            data.forEach(function (item) { if (item.length > 0) { filledCount += 1; } });
-            filledCount.should.equal(3);
-
-            d.loadDatabase(function (err) {
-              assert.isNull(err);
-
-              // Now, the file has been compacted and is only 1 line long
-              var data = fs.readFileSync(d.filename, 'utf8').split('\n')
-                , filledCount = 0;
-
-              data.forEach(function (item) { if (item.length > 0) { filledCount += 1; } });
-              filledCount.should.equal(1);
-
-              done();
-            });
-          })
-        });
+      
+      fs.writeFileSync(autoDb, fileStr, 'utf8');
+      db = new Datastore({ filename: autoDb, autoload: true })
+      
+      db.find({}, function (err, docs) {
+        assert.isNull(err);
+        docs.length.should.equal(2);
+        done();
       });
     });
-
-    it('datafileSize is the size of the dataset upon a databaseLoad', function (done) {
-      var now = new Date()
-        , rawData = model.serialize({ _id: "1", a: 2, ages: [1, 5, 12] }) + '\n' +
-                    model.serialize({ _id: "2", hello: 'world' }) + '\n' +
-                    model.serialize({ _id: "3", nested: { today: now } })
+    
+    it('Throws if autoload fails', function (done) {
+      var fileStr = model.serialize({ _id: '1', a: 5, planet: 'Earth' }) + '\n' + model.serialize({ _id: '2', a: 5, planet: 'Mars' }) + '\n' + '{"$$indexCreated":{"fieldName":"a","unique":true}}'
+        , autoDb = 'workspace/auto.db'
+        , db
         ;
-
-      d.getAllData().length.should.equal(0);
-      d.datafileSize.should.equal(0);
-
-      fs.writeFile(testDb, rawData, 'utf8', function () {
-        d.loadDatabase(function () {
-          d.getAllData().length.should.equal(3);
-          d.datafileSize.should.equal(3);
-
-          d.find({}, function (err, docs) {
-            docs.sort(function (a, b) { return a._id - b._id; });
-            docs.length.should.equal(3);
-            _.isEqual(docs[0], { _id: "1", a: 2, ages: [1, 5, 12] }).should.equal(true);
-            _.isEqual(docs[1], { _id: "2", hello: 'world' }).should.equal(true);
-            _.isEqual(docs[2], { _id: "3", nested: { today: now } }).should.equal(true);
-
-            done();
-          });
-        });
-      });
+      
+      fs.writeFileSync(autoDb, fileStr, 'utf8');
+      
+      // Check the loadDatabase generated an error
+      function onload (err) {
+        err.errorType.should.equal('uniqueViolated');
+        done();
+      }
+      
+      db = new Datastore({ filename: autoDb, autoload: true, onload: onload })
+      
+      db.find({}, function (err, docs) {
+        done("Find should not be executed since autoload failed");
+      });    
     });
-
-    it('Calling loadDatabase after the data was modified doesnt change its contents', function (done) {
-      d.loadDatabase(function () {
-        d.insert({ a: 1 }, function (err) {
-          assert.isNull(err);
-          d.insert({ a: 2 }, function (err) {
-            var data = d.getAllData()
-              , doc1 = _.find(data, function (doc) { return doc.a === 1; })
-              , doc2 = _.find(data, function (doc) { return doc.a === 2; })
-              ;
-            assert.isNull(err);
-            data.length.should.equal(2);
-            doc1.a.should.equal(1);
-            doc2.a.should.equal(2);
-
-            d.loadDatabase(function (err) {
-              var data = d.getAllData()
-                , doc1 = _.find(data, function (doc) { return doc.a === 1; })
-                , doc2 = _.find(data, function (doc) { return doc.a === 2; })
-                ;
-              assert.isNull(err);
-              data.length.should.equal(2);
-              doc1.a.should.equal(1);
-              doc2.a.should.equal(2);
-
-              done();
-            });
-          });
-        });
-      });
-    });
-
-    it('Calling loadDatabase after the datafile was removed with will reset the database', function (done) {
-      d.loadDatabase(function () {
-        d.insert({ a: 1 }, function (err) {
-          assert.isNull(err);
-          d.insert({ a: 2 }, function (err) {
-            var data = d.getAllData()
-              , doc1 = _.find(data, function (doc) { return doc.a === 1; })
-              , doc2 = _.find(data, function (doc) { return doc.a === 2; })
-              ;
-            assert.isNull(err);
-            data.length.should.equal(2);
-            doc1.a.should.equal(1);
-            doc2.a.should.equal(2);
-
-            fs.unlink(testDb, function (err) {
-              assert.isNull(err);
-              d.loadDatabase(function (err) {
-                assert.isNull(err);
-                d.getAllData().length.should.equal(0);
-
-                done();
-              });
-            });
-          });
-        });
-      });
-    });
-
-    it('Calling loadDatabase after the datafile was modified loads the new data', function (done) {
-      d.loadDatabase(function () {
-        d.insert({ a: 1 }, function (err) {
-          assert.isNull(err);
-          d.insert({ a: 2 }, function (err) {
-            var data = d.getAllData()
-              , doc1 = _.find(data, function (doc) { return doc.a === 1; })
-              , doc2 = _.find(data, function (doc) { return doc.a === 2; })
-              ;
-            assert.isNull(err);
-            data.length.should.equal(2);
-            doc1.a.should.equal(1);
-            doc2.a.should.equal(2);
-
-            fs.writeFile(testDb, '{"a":3,"_id":"aaa"}', 'utf8', function (err) {
-              assert.isNull(err);
-              d.loadDatabase(function (err) {
-                var data = d.getAllData()
-                , doc1 = _.find(data, function (doc) { return doc.a === 1; })
-                , doc2 = _.find(data, function (doc) { return doc.a === 2; })
-                , doc3 = _.find(data, function (doc) { return doc.a === 3; })
-                ;
-                assert.isNull(err);
-                data.length.should.equal(1);
-                doc3.a.should.equal(3);
-                assert.isUndefined(doc1);
-                assert.isUndefined(doc2);
-
-                done();
-              });
-            });
-          });
-        });
-      });
-    });
-
-  });   // ==== End of 'Loading the database data from file and persistence' ==== //
-
+ 
+  });
 
   describe('Insert', function () {
 
@@ -406,31 +198,17 @@ describe('Database', function () {
       });
     });
 
-    it('If an _id is already given when we insert a document, dont use it but use an automatic one', function (done) {
+    it('If an _id is already given when we insert a document, use that instead of generating a random one', function (done) {
       d.insert({ _id: 'test', stuff: true }, function (err, newDoc) {
         if (err) { return done(err); }
 
         newDoc.stuff.should.equal(true);
-        newDoc._id.should.not.equal('test');
+        newDoc._id.should.equal('test');
 
-        done();
-      });
-    });
-
-    it('datafileSize is incremented by 1 upon every insert', function (done) {
-      d.datafileSize.should.equal(0);
-      d.getAllData().length.should.equal(0);
-      d.insert({ a: 3 }, function () {
-        d.datafileSize.should.equal(1);
-        d.getAllData().length.should.equal(1);
-        d.insert({ a: 3 }, function () {
-          d.datafileSize.should.equal(2);
-          d.getAllData().length.should.equal(2);
-          d.insert({ a: 3 }, function () {
-            d.datafileSize.should.equal(3);
-            d.getAllData().length.should.equal(3);
-            done();
-          });
+        d.insert({ _id: 'test', otherstuff: 42 }, function (err) {
+          err.errorType.should.equal('uniqueViolated');
+        
+          done();
         });
       });
     });
@@ -444,6 +222,98 @@ describe('Database', function () {
           done();
         });
       });
+    });
+    
+    it('Can insert an array of documents at once', function (done) {
+      var docs = [{ a: 5, b: 'hello' }, { a: 42, b: 'world' }];
+    
+      d.insert(docs, function (err) {
+        d.find({}, function (err, docs) {
+          var data;
+        
+          docs.length.should.equal(2);
+          _.find(docs, function (doc) { return doc.a === 5; }).b.should.equal('hello');
+          _.find(docs, function (doc) { return doc.a === 42; }).b.should.equal('world');
+          
+          // The data has been persisted correctly
+          data = _.filter(fs.readFileSync(testDb, 'utf8').split('\n'), function (line) { return line.length > 0; });
+          data.length.should.equal(2);
+          model.deserialize(data[0]).a.should.equal(5);
+          model.deserialize(data[0]).b.should.equal('hello');
+          model.deserialize(data[1]).a.should.equal(42);
+          model.deserialize(data[1]).b.should.equal('world');
+                    
+          done();
+        });
+      });
+    });
+    
+    it('If a bulk insert violates a constraint, all changes are rolled back', function (done) {
+      var docs = [{ a: 5, b: 'hello' }, { a: 42, b: 'world' }, { a: 5, b: 'bloup' }, { a: 7 }];
+    
+      d.ensureIndex({ fieldName: 'a', unique: true });
+    
+      d.insert(docs, function (err) {
+        err.errorType.should.equal('uniqueViolated');
+      
+        d.find({}, function (err, docs) {
+          // Datafile only contains index definition
+          var datafileContents = model.deserialize(fs.readFileSync(testDb, 'utf8'));
+          assert.deepEqual(datafileContents, { $$indexCreated: { fieldName: 'a', unique: true } });
+
+          docs.length.should.equal(0);
+
+          done();
+        });
+      });
+    });
+
+    it('Can insert a doc with id 0', function (done) {
+      d.insert({ _id: 0, hello: 'world' }, function (err, doc) {
+        doc._id.should.equal(0);
+        doc.hello.should.equal('world');
+        done();
+      });
+    });
+    
+    /**
+     * Complicated behavior here. Basically we need to test that when a user function throws an exception, it is not caught
+     * in NeDB and the callback called again, transforming a user error into a NeDB error.
+     *
+     * So we need a way to check that the callback is called only once and the exception thrown is indeed the client exception
+     * Mocha's exception handling mechanism interferes with this since it already registers a listener on uncaughtException
+     * which we need to use since findOne is not called in the same turn of the event loop (so no try/catch)
+     * So we remove all current listeners, put our own which when called will register the former listeners (incl. Mocha's) again.
+     *
+     * Note: maybe using an in-memory only NeDB would give us an easier solution
+     */
+    it('If the callback throws an uncaught execption, dont catch it inside findOne, this is userspace concern', function (done) {
+      var tryCount = 0
+        , currentUncaughtExceptionHandlers = process.listeners('uncaughtException')
+        , i
+        ;
+
+      process.removeAllListeners('uncaughtException');
+      
+      process.on('uncaughtException', function MINE (ex) {
+        for (i = 0; i < currentUncaughtExceptionHandlers.length; i += 1) {
+          process.on('uncaughtException', currentUncaughtExceptionHandlers[i]);
+        }
+      
+        ex.should.equal('SOME EXCEPTION');
+        done();
+      });
+
+      d.insert({ a: 5 }, function () {
+        d.findOne({ a : 5}, function (err, doc) {            
+          if (tryCount === 0) {
+            tryCount += 1;
+            throw 'SOME EXCEPTION';
+          } else {
+            done('Callback was called twice');
+          }
+        });
+      });      
     });
 
   });   // ==== End of 'Insert' ==== //
@@ -747,9 +617,207 @@ describe('Database', function () {
         });
       });
     });
+    
+    it('Can use sort, skip and limit if the callback is not passed to find but to exec', function (done) {
+      d.insert({ a: 2, hello: 'world' }, function () {
+        d.insert({ a: 24, hello: 'earth' }, function () {
+          d.insert({ a: 13, hello: 'blueplanet' }, function () {
+            d.insert({ a: 15, hello: 'home' }, function () {
+              d.find({}).sort({ a: 1 }).limit(2).exec(function (err, docs) {
+                assert.isNull(err);
+                docs.length.should.equal(2);
+                docs[0].hello.should.equal('world');
+                docs[1].hello.should.equal('blueplanet');
+                done();
+              });
+            });
+          });
+        });      
+      });
+    });
+
+     it('Can use sort and skip if the callback is not passed to findOne but to exec', function (done) {
+      d.insert({ a: 2, hello: 'world' }, function () {
+        d.insert({ a: 24, hello: 'earth' }, function () {
+          d.insert({ a: 13, hello: 'blueplanet' }, function () {
+            d.insert({ a: 15, hello: 'home' }, function () {
+              // No skip no query
+              d.findOne({}).sort({ a: 1 }).exec(function (err, doc) {
+                assert.isNull(err);
+                doc.hello.should.equal('world');
+                
+                // A query
+                d.findOne({ a: { $gt: 14 } }).sort({ a: 1 }).exec(function (err, doc) {
+                  assert.isNull(err);
+                  doc.hello.should.equal('home');
+
+                  // And a skip
+                  d.findOne({ a: { $gt: 14 } }).sort({ a: 1 }).skip(1).exec(function (err, doc) {
+                    assert.isNull(err);
+                    doc.hello.should.equal('earth');
+
+                    // No result
+                    d.findOne({ a: { $gt: 14 } }).sort({ a: 1 }).skip(2).exec(function (err, doc) {
+                      assert.isNull(err);
+                      assert.isNull(doc);
+
+                      done();
+                    });
+                  });
+                });
+              });
+            });
+          });
+        });
+      });
+    });
+
+    it('Can use projections in find, normal or cursor way', function (done) {
+      d.insert({ a: 2, hello: 'world' }, function (err, doc0) {
+        d.insert({ a: 24, hello: 'earth' }, function (err, doc1) {
+          d.find({ a: 2 }, { a: 0, _id: 0 }, function (err, docs) {
+            assert.isNull(err);
+            docs.length.should.equal(1);
+            assert.deepEqual(docs[0], { hello: 'world' });
+
+            d.find({ a: 2 }, { a: 0, _id: 0 }).exec(function (err, docs) {
+              assert.isNull(err);
+              docs.length.should.equal(1);
+              assert.deepEqual(docs[0], { hello: 'world' });
+
+              // Can't use both modes at once if not _id
+              d.find({ a: 2 }, { a: 0, hello: 1 }, function (err, docs) {
+                assert.isNotNull(err);
+                assert.isUndefined(docs);
+
+                d.find({ a: 2 }, { a: 0, hello: 1 }).exec(function (err, docs) {
+                  assert.isNotNull(err);
+                  assert.isUndefined(docs);
+
+                  done();
+                });
+              });
+            });
+          });
+        });
+      });
+    });
+
+    it('Can use projections in findOne, normal or cursor way', function (done) {
+      d.insert({ a: 2, hello: 'world' }, function (err, doc0) {
+        d.insert({ a: 24, hello: 'earth' }, function (err, doc1) {
+          d.findOne({ a: 2 }, { a: 0, _id: 0 }, function (err, doc) {
+            assert.isNull(err);
+            assert.deepEqual(doc, { hello: 'world' });
+
+            d.findOne({ a: 2 }, { a: 0, _id: 0 }).exec(function (err, doc) {
+              assert.isNull(err);
+              assert.deepEqual(doc, { hello: 'world' });
+
+              // Can't use both modes at once if not _id
+              d.findOne({ a: 2 }, { a: 0, hello: 1 }, function (err, doc) {
+                assert.isNotNull(err);
+                assert.isUndefined(doc);
+
+                d.findOne({ a: 2 }, { a: 0, hello: 1 }).exec(function (err, doc) {
+                  assert.isNotNull(err);
+                  assert.isUndefined(doc);
+
+                  done();
+                });
+              });
+            });
+          });
+        });
+      });
+    });
 
   });   // ==== End of 'Find' ==== //
 
+  describe('Count', function() {
+
+    it('Count all documents if an empty query is used', function (done) {
+      async.waterfall([
+      function (cb) {
+        d.insert({ somedata: 'ok' }, function (err) {
+          d.insert({ somedata: 'another', plus: 'additional data' }, function (err) {
+            d.insert({ somedata: 'again' }, function (err) { return cb(err); });
+          });
+        });
+      }
+      , function (cb) {   // Test with empty object
+        d.count({}, function (err, docs) {
+          assert.isNull(err);
+          docs.should.equal(3);
+          return cb();
+        });
+      }
+      ], done);
+    });
+
+    it('Count all documents matching a basic query', function (done) {
+      async.waterfall([
+      function (cb) {
+        d.insert({ somedata: 'ok' }, function (err) {
+          d.insert({ somedata: 'again', plus: 'additional data' }, function (err) {
+            d.insert({ somedata: 'again' }, function (err) { return cb(err); });
+          });
+        });
+      }
+      , function (cb) {   // Test with query that will return docs
+        d.count({ somedata: 'again' }, function (err, docs) {
+          assert.isNull(err);
+          docs.should.equal(2);
+          return cb();
+        });
+      }
+      , function (cb) {   // Test with query that doesn't match anything
+        d.count({ somedata: 'nope' }, function (err, docs) {
+          assert.isNull(err);
+          docs.should.equal(0);
+          return cb();
+        });
+      }
+      ], done);
+    });
+
+    it('Array fields match if any element matches', function (done) {
+      d.insert({ fruits: ['pear', 'apple', 'banana'] }, function (err, doc1) {
+        d.insert({ fruits: ['coconut', 'orange', 'pear'] }, function (err, doc2) {
+          d.insert({ fruits: ['banana'] }, function (err, doc3) {
+            d.count({ fruits: 'pear' }, function (err, docs) {
+              assert.isNull(err);
+              docs.should.equal(2);
+
+              d.count({ fruits: 'banana' }, function (err, docs) {
+                assert.isNull(err);
+                docs.should.equal(2);
+
+                d.count({ fruits: 'doesntexist' }, function (err, docs) {
+                  assert.isNull(err);
+                  docs.should.equal(0);
+
+                  done();
+                });
+              });
+            });
+          });
+        });
+      });
+    });
+
+    it('Returns an error if the query is not well formed', function (done) {
+      d.insert({ hello: 'world' }, function () {
+        d.count({ $or: { hello: 'world' } }, function (err, docs) {
+          assert.isDefined(err);
+          assert.isUndefined(docs);
+
+          done();
+        });
+      });
+    });
+
+  }); 
 
   describe('Update', function () {
 
@@ -903,30 +971,93 @@ describe('Database', function () {
       ], done);
     });
 
-    it('Can perform upserts if needed', function (done) {
-      d.update({ impossible: 'db is empty anyway' }, { newDoc: true }, {}, function (err, nr, upsert) {
-        assert.isNull(err);
-        nr.should.equal(0);
-        assert.isUndefined(upsert);
+    describe('Upserts', function () {
+    
+      it('Can perform upserts if needed', function (done) {
+        d.update({ impossible: 'db is empty anyway' }, { newDoc: true }, {}, function (err, nr, upsert) {
+          assert.isNull(err);
+          nr.should.equal(0);
+          assert.isUndefined(upsert);
 
-        d.find({}, function (err, docs) {
-          docs.length.should.equal(0);   // Default option for upsert is false
+          d.find({}, function (err, docs) {
+            docs.length.should.equal(0);   // Default option for upsert is false
 
-          d.update({ impossible: 'db is empty anyway' }, { newDoc: true }, { upsert: true }, function (err, nr, upsert) {
-            assert.isNull(err);
-            nr.should.equal(1);
-            upsert.should.equal(true);
+            d.update({ impossible: 'db is empty anyway' }, { something: "created ok" }, { upsert: true }, function (err, nr, newDoc) {
+              assert.isNull(err);
+              nr.should.equal(1);
+              newDoc.something.should.equal("created ok");
+              assert.isDefined(newDoc._id);
 
-            d.find({}, function (err, docs) {
-              docs.length.should.equal(1);   // Default option for upsert is false
-              docs[0].newDoc.should.equal(true);
-
-              done();
+              d.find({}, function (err, docs) {
+                docs.length.should.equal(1);   // Default option for upsert is false
+                docs[0].something.should.equal("created ok");
+                
+                // Modifying the returned upserted document doesn't modify the database
+                newDoc.newField = true;
+                d.find({}, function (err, docs) {
+                  docs[0].something.should.equal("created ok");
+                  assert.isUndefined(docs[0].newField);
+                
+                  done();
+                });
+              });
             });
           });
         });
       });
-    });
+      
+      it('If the update query is a normal object with no modifiers, it is the doc that will be upserted', function (done) {
+        d.update({ $or: [{ a: 4 }, { a: 5 }] }, { hello: 'world', bloup: 'blap' }, { upsert: true }, function (err) {
+          d.find({}, function (err, docs) {
+            assert.isNull(err);
+            docs.length.should.equal(1);
+            var doc = docs[0];
+            Object.keys(doc).length.should.equal(3);
+            doc.hello.should.equal('world');
+            doc.bloup.should.equal('blap');
+            done();
+          });
+        });
+      });
+      
+      it('If the update query contains modifiers, it is applied to the object resulting from removing all operators from the find query 1', function (done) {
+        d.update({ $or: [{ a: 4 }, { a: 5 }] }, { $set: { hello: 'world' }, $inc: { bloup: 3 } }, { upsert: true }, function (err) {
+          d.find({ hello: 'world' }, function (err, docs) {
+            assert.isNull(err);
+            docs.length.should.equal(1);
+            var doc = docs[0];
+            Object.keys(doc).length.should.equal(3);
+            doc.hello.should.equal('world');
+            doc.bloup.should.equal(3);
+            done();
+          });
+        });
+      });
+      
+      it('If the update query contains modifiers, it is applied to the object resulting from removing all operators from the find query 2', function (done) {
+        d.update({ $or: [{ a: 4 }, { a: 5 }], cac: 'rrr' }, { $set: { hello: 'world' }, $inc: { bloup: 3 } }, { upsert: true }, function (err) {
+          d.find({ hello: 'world' }, function (err, docs) {
+            assert.isNull(err);
+            docs.length.should.equal(1);
+            var doc = docs[0];
+            Object.keys(doc).length.should.equal(4);
+            doc.cac.should.equal('rrr');
+            doc.hello.should.equal('world');
+            doc.bloup.should.equal(3);
+            done();
+          });
+        });
+      });
+      
+      it('Performing upsert with badly formatted fields yields a standard error not an exception', function(done) {
+        d.update({_id: '1234'}, { $set: { $$badfield: 5 }}, { upsert: true }, function(err, doc) {
+          assert.isDefined(err);
+          done();
+        })
+      });
+
+
+    });   // ==== End of 'Upserts' ==== //
 
     it('Cannot perform update if the update query is not either registered-modifiers-only or copy-only, or contain badly formatted fields', function (done) {
       d.insert({ something: 'yup' }, function () {
@@ -973,10 +1104,12 @@ describe('Database', function () {
     });
 
     it('Can upsert a document even with modifiers', function (done) {
-      d.update({ bloup: 'blap' }, { $set: { hello: 'world' } }, { upsert: true }, function (err, nr, upsert) {
+      d.update({ bloup: 'blap' }, { $set: { hello: 'world' } }, { upsert: true }, function (err, nr, newDoc) {
         assert.isNull(err);
         nr.should.equal(1);
-        upsert.should.equal(true);
+        newDoc.bloup.should.equal('blap');
+        newDoc.hello.should.equal('world');
+        assert.isDefined(newDoc._id);
 
         d.find({}, function (err, docs) {
           docs.length.should.equal(1);
@@ -1132,25 +1265,82 @@ describe('Database', function () {
         });
       });
     });
-
-    it('datafileSize stays correct upon updates', function (done) {
-      d.insert({ a: 2 }, function () {
-        d.insert({ a: 3 }, function () {
-          d.insert({ a: 5 }, function () {
-            d.datafileSize.should.equal(3);
-            d.getAllData().length.should.equal(3);
-
-            d.update({ a: 3 }, { $set: { a: 4 } }, {}, function () {
-              d.datafileSize.should.equal(4);
-              d.getAllData().length.should.equal(3);
-
-              d.update({ a: { $in: [2, 4] } }, { $set: { a: 5 } }, { multi: true }, function () {
-                d.datafileSize.should.equal(6);
-                d.getAllData().length.should.equal(3);
-
+    
+    it('Can update without the options arg (will use defaults then)', function (done) {
+      d.insert({ a:1, hello: 'world' }, function (err, doc1) {
+        d.insert({ a:2, hello: 'earth' }, function (err, doc2) {
+          d.insert({ a:5, hello: 'pluton' }, function (err, doc3) {
+            d.update({ a: 2 }, { $inc: { a: 10 } }, function (err, nr) {
+              assert.isNull(err);
+              nr.should.equal(1);
+              d.find({}, function (err, docs) {
+                var d1 = _.find(docs, function (doc) { return doc._id === doc1._id })
+                  , d2 = _.find(docs, function (doc) { return doc._id === doc2._id })
+                  , d3 = _.find(docs, function (doc) { return doc._id === doc3._id })
+                  ;
+                  
+                d1.a.should.equal(1);
+                d2.a.should.equal(12);
+                d3.a.should.equal(5);
+                
                 done();
               });
             });
+          });
+        });
+      });
+    });
+
+    it('If a multi update fails on one document, previous updates should be rolled back', function (done) {
+      d.ensureIndex({ fieldName: 'a' });
+      d.insert({ a: 4 }, function (err, doc1) {
+        d.insert({ a: 5 }, function (err, doc2) {
+          d.insert({ a: 'abc' }, function (err, doc3) {
+            // With this query, candidates are always returned in the order 4, 5, 'abc' so it's always the last one which fails
+            d.update({ a: { $in: [4, 5, 'abc'] } }, { $inc: { a: 10 } }, { multi: true }, function (err) {
+              assert.isDefined(err);
+
+              // No index modified
+              _.each(d.indexes, function (index) {
+                var docs = index.getAll()
+                  , d1 = _.find(docs, function (doc) { return doc._id === doc1._id })
+                  , d2 = _.find(docs, function (doc) { return doc._id === doc2._id })
+                  , d3 = _.find(docs, function (doc) { return doc._id === doc3._id })
+                  ;
+
+                // All changes rolled back, including those that didn't trigger an error
+                d1.a.should.equal(4);
+                d2.a.should.equal(5);
+                d3.a.should.equal('abc');
+              });
+
+              done();
+            });
+          });
+        });
+      });
+    });
+
+    it('If an index constraint is violated by an update, all changes should be rolled back', function (done) {
+      d.ensureIndex({ fieldName: 'a', unique: true });
+      d.insert({ a: 4 }, function (err, doc1) {
+        d.insert({ a: 5 }, function (err, doc2) {
+          // With this query, candidates are always returned in the order 4, 5, 'abc' so it's always the last one which fails
+           d.update({ a: { $in: [4, 5, 'abc'] } }, { $set: { a: 10 } }, { multi: true }, function (err) {
+            assert.isDefined(err);
+
+            // Check that no index was modified
+            _.each(d.indexes, function (index) {
+              var docs = index.getAll()
+              , d1 = _.find(docs, function (doc) { return doc._id === doc1._id })
+              , d2 = _.find(docs, function (doc) { return doc._id === doc2._id })
+              ;
+
+              d1.a.should.equal(4);
+              d2.a.should.equal(5);
+            });
+
+            done();
           });
         });
       });
@@ -1304,22 +1494,24 @@ describe('Database', function () {
         });
       });
     });
-
-    it('datafileSize stays correct upon removes', function (done) {
-      d.insert({ a: 2 }, function () {
-        d.insert({ a: 3 }, function () {
-          d.insert({ a: 5 }, function () {
-            d.datafileSize.should.equal(3);
-            d.getAllData().length.should.equal(3);
-
-            d.remove({ a: 3 }, {}, function () {
-              d.datafileSize.should.equal(4);
-              d.getAllData().length.should.equal(2);
-
-              d.remove({ a: { $in: [2, 5] } }, { multi: true }, function () {
-                d.datafileSize.should.equal(6);
-                d.getAllData().length.should.equal(0);
-
+    
+    it('Can remove without the options arg (will use defaults then)', function (done) {
+      d.insert({ a:1, hello: 'world' }, function (err, doc1) {
+        d.insert({ a:2, hello: 'earth' }, function (err, doc2) {
+          d.insert({ a:5, hello: 'pluton' }, function (err, doc3) {
+            d.remove({ a: 2 }, function (err, nr) {
+              assert.isNull(err);
+              nr.should.equal(1);
+              d.find({}, function (err, docs) {
+                var d1 = _.find(docs, function (doc) { return doc._id === doc1._id })
+                  , d2 = _.find(docs, function (doc) { return doc._id === doc2._id })
+                  , d3 = _.find(docs, function (doc) { return doc._id === doc3._id })
+                  ;
+                  
+                d1.a.should.equal(1);
+                assert.isUndefined(d2);
+                d3.a.should.equal(5);
+                
                 done();
               });
             });
@@ -1343,12 +1535,10 @@ describe('Database', function () {
           ;
 
         d.getAllData().length.should.equal(0);
-        d.datafileSize.should.equal(0);
 
         fs.writeFile(testDb, rawData, 'utf8', function () {
           d.loadDatabase(function () {
             d.getAllData().length.should.equal(3);
-            d.datafileSize.should.equal(3);
 
             assert.deepEqual(Object.keys(d.indexes), ['_id']);
 
@@ -1365,6 +1555,40 @@ describe('Database', function () {
           });
         });
       });
+      
+      it('ensureIndex can be called twice on the same field, the second call will ahve no effect', function (done) {
+        Object.keys(d.indexes).length.should.equal(1);
+        Object.keys(d.indexes)[0].should.equal("_id");
+      
+        d.insert({ planet: "Earth" }, function () {
+          d.insert({ planet: "Mars" }, function () {
+            d.find({}, function (err, docs) {
+              docs.length.should.equal(2);
+              
+              d.ensureIndex({ fieldName: "planet" }, function (err) {
+                assert.isNull(err);
+                Object.keys(d.indexes).length.should.equal(2);
+                Object.keys(d.indexes)[0].should.equal("_id");   
+                Object.keys(d.indexes)[1].should.equal("planet");   
+
+                d.indexes.planet.getAll().length.should.equal(2);
+                
+                // This second call has no effect, documents don't get inserted twice in the index
+                d.ensureIndex({ fieldName: "planet" }, function (err) {
+                  assert.isNull(err);
+                  Object.keys(d.indexes).length.should.equal(2);
+                  Object.keys(d.indexes)[0].should.equal("_id");   
+                  Object.keys(d.indexes)[1].should.equal("planet");   
+
+                  d.indexes.planet.getAll().length.should.equal(2);                
+                  
+                  done();
+                });
+              });
+            });
+          });
+        });
+      });
 
       it('ensureIndex can be called after the data set was modified and the index still be correct', function (done) {
         var rawData = model.serialize({ _id: "aaa", z: "1", a: 2, ages: [1, 5, 12] }) + '\n' +
@@ -1372,12 +1596,10 @@ describe('Database', function () {
           ;
 
         d.getAllData().length.should.equal(0);
-        d.datafileSize.should.equal(0);
 
         fs.writeFile(testDb, rawData, 'utf8', function () {
           d.loadDatabase(function () {
             d.getAllData().length.should.equal(2);
-            d.datafileSize.should.equal(2);
 
             assert.deepEqual(Object.keys(d.indexes), ['_id']);
 
@@ -1429,7 +1651,6 @@ describe('Database', function () {
           ;
 
         d.getAllData().length.should.equal(0);
-        d.datafileSize.should.equal(0);
 
         d.ensureIndex({ fieldName: 'z' });
         d.indexes.z.fieldName.should.equal('z');
@@ -1445,7 +1666,6 @@ describe('Database', function () {
               ;
 
             d.getAllData().length.should.equal(3);
-            d.datafileSize.should.equal(3);
 
             d.indexes.z.tree.getNumberOfKeys().should.equal(3);
             d.indexes.z.tree.search('1')[0].should.equal(doc1);
@@ -1465,7 +1685,6 @@ describe('Database', function () {
           ;
 
         d.getAllData().length.should.equal(0);
-        d.datafileSize.should.equal(0);
 
         d.ensureIndex({ fieldName: 'z' });
         d.ensureIndex({ fieldName: 'a' });
@@ -1480,7 +1699,6 @@ describe('Database', function () {
               ;
 
             d.getAllData().length.should.equal(3);
-            d.datafileSize.should.equal(3);
 
             d.indexes.z.tree.getNumberOfKeys().should.equal(3);
             d.indexes.z.tree.search('1')[0].should.equal(doc1);
@@ -1505,7 +1723,6 @@ describe('Database', function () {
           ;
 
         d.getAllData().length.should.equal(0);
-        d.datafileSize.should.equal(0);
 
         d.ensureIndex({ fieldName: 'z', unique: true });
         d.indexes.z.tree.getNumberOfKeys().should.equal(0);
@@ -1515,7 +1732,6 @@ describe('Database', function () {
             err.errorType.should.equal('uniqueViolated');
             err.key.should.equal("1");
             d.getAllData().length.should.equal(0);
-            d.datafileSize.should.equal(0);
             d.indexes.z.tree.getNumberOfKeys().should.equal(0);
 
             done();
@@ -1528,7 +1744,7 @@ describe('Database', function () {
           d.insert({ a: 2, b: 45 }, function () {
             d.insert({ a: 1, b: 3 }, function () {
               d.ensureIndex({ fieldName: 'b' }, function (err) {
-                assert.isUndefined(err);
+                assert.isNull(err);
 
                 d.ensureIndex({ fieldName: 'a', unique: true }, function (err) {
                   err.errorType.should.equal('uniqueViolated');
@@ -1541,9 +1757,27 @@ describe('Database', function () {
           });
         });
       });
+      
+      it('Can remove an index', function (done) {
+        d.ensureIndex({ fieldName: 'e' }, function (err) {
+          assert.isNull(err);
+          
+          Object.keys(d.indexes).length.should.equal(2);
+          assert.isNotNull(d.indexes.e);
+          
+          d.removeIndex("e", function (err) {
+            assert.isNull(err);
+            Object.keys(d.indexes).length.should.equal(1);
+            assert.isUndefined(d.indexes.e); 
+ 
+            done();
+          });
+        });
+      });
 
     });   // ==== End of 'ensureIndex and index initialization in database loading' ==== //
 
+    
     describe('Indexing newly inserted documents', function () {
 
       it('Newly inserted documents are indexed', function (done) {
@@ -2024,113 +2258,225 @@ describe('Database', function () {
         });
       });
 
-    });   // ==== End of 'Removing indexes upon document update' ==== //
+    });   // ==== End of 'Updating indexes upon document remove' ==== //
+    
+    
+    describe('Persisting indexes', function () {
+    
+      it('Indexes are persisted to a separate file and recreated upon reload', function (done) {
+        var persDb = "workspace/persistIndexes.db"
+          , db
+          ;
+        
+        if (fs.existsSync(persDb)) { fs.writeFileSync(persDb, '', 'utf8'); }
+        db = new Datastore({ filename: persDb, autoload: true });
+        
+        Object.keys(db.indexes).length.should.equal(1);
+        Object.keys(db.indexes)[0].should.equal("_id");
+        
+        db.insert({ planet: "Earth" }, function (err) {
+          assert.isNull(err);
+          db.insert({ planet: "Mars" }, function (err) {
+            assert.isNull(err);
+            
+            db.ensureIndex({ fieldName: "planet" }, function (err) {
+              Object.keys(db.indexes).length.should.equal(2);
+              Object.keys(db.indexes)[0].should.equal("_id");
+              Object.keys(db.indexes)[1].should.equal("planet");              
+              db.indexes._id.getAll().length.should.equal(2);
+              db.indexes.planet.getAll().length.should.equal(2);
+              db.indexes.planet.fieldName.should.equal("planet");
+              
+              // After a reload the indexes are recreated
+              db = new Datastore({ filename: persDb });
+              db.loadDatabase(function (err) {
+                assert.isNull(err);
+                Object.keys(db.indexes).length.should.equal(2);
+                Object.keys(db.indexes)[0].should.equal("_id");
+                Object.keys(db.indexes)[1].should.equal("planet");                
+                db.indexes._id.getAll().length.should.equal(2);
+                db.indexes.planet.getAll().length.should.equal(2);
+                db.indexes.planet.fieldName.should.equal("planet");
+
+                // After another reload the indexes are still there (i.e. they are preserved during autocompaction)
+                db = new Datastore({ filename: persDb });
+                db.loadDatabase(function (err) {
+                  assert.isNull(err);
+                  Object.keys(db.indexes).length.should.equal(2);
+                  Object.keys(db.indexes)[0].should.equal("_id");
+                  Object.keys(db.indexes)[1].should.equal("planet");                
+                  db.indexes._id.getAll().length.should.equal(2);
+                  db.indexes.planet.getAll().length.should.equal(2);
+                  db.indexes.planet.fieldName.should.equal("planet");
+              
+                  done();                
+                });
+              });
+            });
+          });
+        });
+      });
+    
+      it('Indexes are persisted with their options and recreated even if some db operation happen between loads', function (done) {
+        var persDb = "workspace/persistIndexes.db"
+          , db
+          ;
+        
+        if (fs.existsSync(persDb)) { fs.writeFileSync(persDb, '', 'utf8'); }
+        db = new Datastore({ filename: persDb, autoload: true });
+        
+        Object.keys(db.indexes).length.should.equal(1);
+        Object.keys(db.indexes)[0].should.equal("_id");
+        
+        db.insert({ planet: "Earth" }, function (err) {
+          assert.isNull(err);
+          db.insert({ planet: "Mars" }, function (err) {
+            assert.isNull(err);
+            
+            db.ensureIndex({ fieldName: "planet", unique: true, sparse: false }, function (err) {
+              Object.keys(db.indexes).length.should.equal(2);
+              Object.keys(db.indexes)[0].should.equal("_id");
+              Object.keys(db.indexes)[1].should.equal("planet");              
+              db.indexes._id.getAll().length.should.equal(2);
+              db.indexes.planet.getAll().length.should.equal(2);
+              db.indexes.planet.unique.should.equal(true);
+              db.indexes.planet.sparse.should.equal(false);
+              
+              db.insert({ planet: "Jupiter" }, function (err) {
+                assert.isNull(err);
+
+                // After a reload the indexes are recreated
+                db = new Datastore({ filename: persDb });
+                db.loadDatabase(function (err) {
+                  assert.isNull(err);
+                  Object.keys(db.indexes).length.should.equal(2);
+                  Object.keys(db.indexes)[0].should.equal("_id");
+                  Object.keys(db.indexes)[1].should.equal("planet");                
+                  db.indexes._id.getAll().length.should.equal(3);
+                  db.indexes.planet.getAll().length.should.equal(3);
+                  db.indexes.planet.unique.should.equal(true);
+                  db.indexes.planet.sparse.should.equal(false);
+                  
+                  db.ensureIndex({ fieldName: 'bloup', unique: false, sparse: true }, function (err) {
+                    assert.isNull(err);
+                    Object.keys(db.indexes).length.should.equal(3);
+                    Object.keys(db.indexes)[0].should.equal("_id");
+                    Object.keys(db.indexes)[1].should.equal("planet");
+                    Object.keys(db.indexes)[2].should.equal("bloup");
+                    db.indexes._id.getAll().length.should.equal(3);
+                    db.indexes.planet.getAll().length.should.equal(3);
+                    db.indexes.bloup.getAll().length.should.equal(0);
+                    db.indexes.planet.unique.should.equal(true);
+                    db.indexes.planet.sparse.should.equal(false);                  
+                    db.indexes.bloup.unique.should.equal(false);
+                    db.indexes.bloup.sparse.should.equal(true);                  
+
+                    // After another reload the indexes are still there (i.e. they are preserved during autocompaction)
+                    db = new Datastore({ filename: persDb });
+                    db.loadDatabase(function (err) {
+                      assert.isNull(err);
+                      Object.keys(db.indexes).length.should.equal(3);
+                      Object.keys(db.indexes)[0].should.equal("_id");
+                      Object.keys(db.indexes)[1].should.equal("planet");
+                      Object.keys(db.indexes)[2].should.equal("bloup");
+                      db.indexes._id.getAll().length.should.equal(3);
+                      db.indexes.planet.getAll().length.should.equal(3);
+                      db.indexes.bloup.getAll().length.should.equal(0);
+                      db.indexes.planet.unique.should.equal(true);
+                      db.indexes.planet.sparse.should.equal(false);
+                      db.indexes.bloup.unique.should.equal(false);
+                      db.indexes.bloup.sparse.should.equal(true);
+                  
+                      done();                
+                    });
+                  });
+                });
+              });
+            });
+          });
+        });
+      });
+    
+      it('Indexes can also be removed and the remove persisted', function (done) {
+        var persDb = "workspace/persistIndexes.db"
+          , db
+          ;
+        
+        if (fs.existsSync(persDb)) { fs.writeFileSync(persDb, '', 'utf8'); }
+        db = new Datastore({ filename: persDb, autoload: true });
+        
+        Object.keys(db.indexes).length.should.equal(1);
+        Object.keys(db.indexes)[0].should.equal("_id");
+        
+        db.insert({ planet: "Earth" }, function (err) {
+          assert.isNull(err);
+          db.insert({ planet: "Mars" }, function (err) {
+            assert.isNull(err);
+            
+            db.ensureIndex({ fieldName: "planet" }, function (err) {
+              assert.isNull(err);
+              db.ensureIndex({ fieldName: "another" }, function (err) {
+                assert.isNull(err);
+                Object.keys(db.indexes).length.should.equal(3);
+                Object.keys(db.indexes)[0].should.equal("_id");
+                Object.keys(db.indexes)[1].should.equal("planet");
+                Object.keys(db.indexes)[2].should.equal("another");
+                db.indexes._id.getAll().length.should.equal(2);
+                db.indexes.planet.getAll().length.should.equal(2);
+                db.indexes.planet.fieldName.should.equal("planet");
+                
+                // After a reload the indexes are recreated
+                db = new Datastore({ filename: persDb });
+                db.loadDatabase(function (err) {
+                  assert.isNull(err);
+                  Object.keys(db.indexes).length.should.equal(3);
+                  Object.keys(db.indexes)[0].should.equal("_id");
+                  Object.keys(db.indexes)[1].should.equal("planet");  
+                  Object.keys(db.indexes)[2].should.equal("another");                 
+                  db.indexes._id.getAll().length.should.equal(2);
+                  db.indexes.planet.getAll().length.should.equal(2);
+                  db.indexes.planet.fieldName.should.equal("planet");
+                  
+                  // Index is removed
+                  db.removeIndex("planet", function (err) {
+                    assert.isNull(err);
+                    Object.keys(db.indexes).length.should.equal(2);
+                    Object.keys(db.indexes)[0].should.equal("_id");
+                    Object.keys(db.indexes)[1].should.equal("another");
+                    db.indexes._id.getAll().length.should.equal(2);
+
+                    // After a reload indexes are preserved
+                    db = new Datastore({ filename: persDb });
+                    db.loadDatabase(function (err) {
+                      assert.isNull(err);
+                      Object.keys(db.indexes).length.should.equal(2);
+                      Object.keys(db.indexes)[0].should.equal("_id");
+                      Object.keys(db.indexes)[1].should.equal("another");
+                      db.indexes._id.getAll().length.should.equal(2);
+                  
+                      // After another reload the indexes are still there (i.e. they are preserved during autocompaction)
+                      db = new Datastore({ filename: persDb });
+                      db.loadDatabase(function (err) {
+                        assert.isNull(err);
+                        Object.keys(db.indexes).length.should.equal(2);
+                        Object.keys(db.indexes)[0].should.equal("_id");
+                        Object.keys(db.indexes)[1].should.equal("another");
+                        db.indexes._id.getAll().length.should.equal(2);
+                    
+                        done();                
+                      });
+                    });
+                  });
+                });
+              });
+            });
+          });
+        });
+      });
+      
+    });   // ==== End of 'Persisting indexes' ====    
 
   });   // ==== End of 'Using indexes' ==== //
-
-
-  describe('Pipelining', function () {
-
-    it('Can insert documents and persist them', function (done) {
-      d = new Datastore({ filename: testDb, pipeline: true });
-      d.filename.should.equal(testDb);
-      d.pipeline.should.equal(true);
-      d.inMemoryOnly.should.equal(false);
-      assert.isDefined(d.persistenceExecutor);
-
-      d.insert({ f: 12 }, function (err, doc12) {
-        assert.isNull(err);
-        d.insert({ f: 5 }, function (err, doc5) {
-          assert.isNull(err);
-          d.insert({ f: 31 }, function (err, doc31) {
-            assert.isNull(err);
-
-            // Need to wait a bit for persistence pipeline to be taken care of
-            // 2ms is enough but let's use 50 to be really sure tests don't fail for a bad reason
-            setTimeout(function () {
-              var rawData = fs.readFileSync(testDb, 'utf8')
-                , treatedData = Datastore.treatRawData(rawData)
-                ;
-
-              treatedData.sort(function (a, b) { return a.f - b.f; });
-              treatedData.length.should.equal(3);
-              assert.deepEqual(treatedData[0], doc5);
-              assert.deepEqual(treatedData[1], doc12);
-              assert.deepEqual(treatedData[2], doc31);
-
-              done();
-            }, 50);
-          });
-        });
-      });
-    });
-
-    it('Can remove documents in persistence file too', function (done) {
-      d = new Datastore({ filename: testDb, pipeline: true });
-      d.filename.should.equal(testDb);
-      d.pipeline.should.equal(true);
-      d.inMemoryOnly.should.equal(false);
-      assert.isDefined(d.persistenceExecutor);
-
-      d.insert({ f: 12 }, function (err, doc12) {
-        assert.isNull(err);
-        d.insert({ f: 5 }, function (err, doc5) {
-          assert.isNull(err);
-          d.remove({ f: 12 }, {}, function (err, doc31) {
-            assert.isNull(err);
-
-            // Need to wait a bit for persistence pipeline to be taken care of
-            // 2ms is enough but let's use 50 to be really sure tests don't fail for a bad reason
-            setTimeout(function () {
-              var rawData = fs.readFileSync(testDb, 'utf8')
-                , treatedData = Datastore.treatRawData(rawData)
-                ;
-
-              treatedData.sort(function (a, b) { return a.f - b.f; });
-              treatedData.length.should.equal(1);
-              assert.deepEqual(treatedData[0], doc5);
-
-              done();
-            }, 50);
-          });
-        });
-      });
-    });
-
-    it('Can update documents in persistence file too', function (done) {
-      d = new Datastore({ filename: testDb, pipeline: true });
-      d.filename.should.equal(testDb);
-      d.pipeline.should.equal(true);
-      d.inMemoryOnly.should.equal(false);
-      assert.isDefined(d.persistenceExecutor);
-
-      d.insert({ f: 12 }, function (err, doc12) {
-        assert.isNull(err);
-        d.insert({ f: 5 }, function (err, doc5) {
-          assert.isNull(err);
-          d.update({ f: 12 }, { $set: { f: 555 } }, {}, function (err) {
-            assert.isNull(err);
-
-            // Need to wait a bit for persistence pipeline to be taken care of
-            // 2ms is enough but let's use 50 to be really sure tests don't fail for a bad reason
-            setTimeout(function () {
-              var rawData = fs.readFileSync(testDb, 'utf8')
-                , treatedData = Datastore.treatRawData(rawData)
-                ;
-
-              treatedData.sort(function (a, b) { return a.f - b.f; });
-              treatedData.length.should.equal(2);
-              assert.deepEqual(treatedData[0], doc5);
-              assert.deepEqual(treatedData[1], { f: 555, _id: doc12._id });
-
-              done();
-            }, 50);
-          });
-        });
-      });
-    });
-
-  });   // ==== End of 'Pipelining' ==== //
 
 
 });

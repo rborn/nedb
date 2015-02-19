@@ -6,6 +6,7 @@ var customUtils = require('../lib/customUtils')
   , fs = require('fs')
   , path = require('path')
   , Datastore = require('../lib/datastore')
+  , Persistence = require('../lib/persistence')
   , executeAsap   // process.nextTick or setImmediate depending on your Node version
   ;
 
@@ -27,7 +28,6 @@ module.exports.getConfiguration = function (benchDb) {
   program
     .option('-n --number [number]', 'Size of the collection to test on', parseInt)
     .option('-i --with-index', 'Use an index')
-    .option('-p --with-pipeline', 'Use pipelining')
     .option('-m --in-memory', 'Test with an in-memory only store')
     .parse(process.argv);
 
@@ -36,12 +36,10 @@ module.exports.getConfiguration = function (benchDb) {
   console.log("----------------------------");
   console.log("Test with " + n + " documents");
   console.log(program.withIndex ? "Use an index" : "Don't use an index");
-  console.log(program.withPipeline ? "Use an pipelining" : "Don't use pipelining");
   console.log(program.inMemory ? "Use an in-memory datastore" : "Use a persistent datastore");
   console.log("----------------------------");
 
   d = new Datastore({ filename: benchDb
-                    , pipeline: program.withPipeline
                     , inMemoryOnly: program.inMemory
                     });
 
@@ -53,7 +51,7 @@ module.exports.getConfiguration = function (benchDb) {
  * Ensure the workspace exists and the db datafile is empty
  */
 module.exports.prepareDb = function (filename, cb) {
-  customUtils.ensureDirectoryExists(path.dirname(filename), function () {
+  Persistence.ensureDirectoryExists(path.dirname(filename), function () {
     fs.exists(filename, function (exists) {
       if (exists) {
         fs.unlink(filename, cb);
@@ -133,6 +131,45 @@ module.exports.findDocs = function (d, n, profiler, cb) {
 
     d.find({ docNumber: order[i] }, function (err, docs) {
       if (docs.length !== 1 || docs[0].docNumber !== order[i]) { return cb('One find didnt work'); }
+      executeAsap(function () {
+        runFrom(i + 1);
+      });
+    });
+  }
+  runFrom(0);
+};
+
+
+/**
+ * Find documents with find and the $in operator
+ */
+module.exports.findDocsWithIn = function (d, n, profiler, cb) {
+  var beg = new Date()
+    , order = getRandomArray(n)
+    , ins = [], i, j
+    , arraySize = Math.min(10, n)   // The array for $in needs to be smaller than n (inclusive)
+    ;
+
+  // Preparing all the $in arrays, will take some time
+  for (i = 0; i < n; i += 1) {
+    ins[i] = [];
+    
+    for (j = 0; j < arraySize; j += 1) {
+      ins[i].push((i + j) % n);
+    }
+  }
+      
+  profiler.step("Finding " + n + " documents WITH $IN OPERATOR");
+
+  function runFrom(i) {
+    if (i === n) {   // Finished
+      console.log("===== RESULT (find with in selector) ===== " + Math.floor(1000* n / profiler.elapsedSinceLastStep()) + " ops/s");
+      profiler.step('Finished finding ' + n + ' docs');
+      return cb();
+    }
+
+    d.find({ docNumber: { $in: ins[i] } }, function (err, docs) {
+      if (docs.length !== arraySize) { return cb('One find didnt work'); }
       executeAsap(function () {
         runFrom(i + 1);
       });
